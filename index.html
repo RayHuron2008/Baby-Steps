@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Baby Bounce Prototype Level</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #101820;
+      touch-action: none;
+      font-family: Arial, sans-serif;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: #162436;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<script>
+/*
+  BABY BOUNCE - LEVEL 1 PROTOTYPE
+
+  Premise:
+  A baby bounces down a mansion staircase.
+  The player uses one joystick to balance and land on both feet.
+  The Wobble Bubble shows the baby's lean:
+  left/right = side lean
+  forward/back = forward/backward lean
+*/
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const GAME_W = 430;
+const GAME_H = 760;
+
+let scale = 1;
+let offsetX = 0;
+let offsetY = 0;
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth * devicePixelRatio;
+  canvas.height = window.innerHeight * devicePixelRatio;
+
+  const sx = canvas.width / GAME_W;
+  const sy = canvas.height / GAME_H;
+  scale = Math.min(sx, sy);
+
+  offsetX = (canvas.width - GAME_W * scale) / 2;
+  offsetY = (canvas.height - GAME_H * scale) / 2;
+}
+
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
+function toGamePoint(clientX, clientY) {
+  return {
+    x: (clientX * devicePixelRatio - offsetX) / scale,
+    y: (clientY * devicePixelRatio - offsetY) / scale
+  };
+}
+
+const game = {
+  state: "playing", // playing, fallen, win, gameover
+  time: 0,
+  step: 0,
+  levelSteps: 24,
+  stars: 0,
+  gems: 0,
+  lives: 3,
+  combo: 0,
+  message: "Drag to balance and land!",
+  messageTimer: 2,
+  fallTimer: 0,
+  jumpTimer: 0,
+  jumpDuration: 1.05,
+  landingRating: "",
+  shake: 0
+};
+
+const baby = {
+  x: GAME_W / 2,
+  targetX: GAME_W / 2,
+  y: 470,
+  size: 1,
+  rotation: 0,
+  happy: true,
+  squish: 0
+};
+
+const wobble = {
+  x: 0,
+  y: 0,
+  driftX: 0,
+  driftY: 0
+};
+
+const joystick = {
+  baseX: GAME_W / 2,
+  baseY: GAME_H - 105,
+  radius: 66,
+  knobX: GAME_W / 2,
+  knobY: GAME_H - 105,
+  active: false,
+  pointerId: null,
+  x: 0,
+  y: 0
+};
+
+const level = {
+  obstacles: []
+};
+
+const obstacleTypes = ["pillow", "duck", "block", "ball", "teddy"];
+
+function buildLevel() {
+  level.obstacles = [];
+
+  for (let i = 3; i < game.levelSteps; i++) {
+    if (i % 2 === 0 || Math.random() < 0.45) {
+      const lane = [-1, 0, 1][Math.floor(Math.random() * 3)];
+      const type = obstacleTypes[Math.floor(Math.random() * obstacleTypes.length)];
+      level.obstacles.push({
+        step: i,
+        lane,
+        type,
+        hit: false
+      });
+    }
+  }
+}
+
+buildLevel();
+
+function resetRun(fullReset = true) {
+  game.state = "playing";
+  game.step = fullReset ? 0 : Math.max(0, game.step - 1);
+  game.stars = fullReset ? 0 : game.stars;
+  game.gems = fullReset ? 0 : game.gems;
+  game.combo = 0;
+  game.message = "Drag to balance and land!";
+  game.messageTimer = 2;
+  game.fallTimer = 0;
+  game.jumpTimer = 0;
+  game.landingRating = "";
+  game.shake = 0;
+
+  baby.x = GAME_W / 2;
+  baby.targetX = GAME_W / 2;
+  baby.y = 470;
+  baby.rotation = 0;
+  baby.happy = true;
+  baby.squish = 0;
+
+  wobble.x = 0;
+  wobble.y = 0;
+  wobble.driftX = 0;
+  wobble.driftY = 0;
+
+  joystick.x = 0;
+  joystick.y = 0;
+  joystick.knobX = joystick.baseX;
+  joystick.knobY = joystick.baseY;
+
+  for (const obs of level.obstacles) obs.hit = false;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function easeOutQuad(t) {
+  return 1 - (1 - t) * (1 - t);
+}
+
+function randRange(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function getCurrentLane() {
+  const dx = baby.x - GAME_W / 2;
+  if (dx < -45) return -1;
+  if (dx > 45) return 1;
+  return 0;
+}
+
+function currentObstacle() {
+  return level.obstacles.find(o => o.step === game.step + 1 && !o.hit);
+}
+
+function update(dt) {
+  game.time += dt;
+
+  if (game.messageTimer > 0) {
+    game.messageTimer -= dt;
+  }
+
+  if (game.shake > 0) {
+    game.shake -= dt * 6;
+    if (game.shake < 0) game.shake = 0;
+  }
+
+  if (game.state === "fallen") {
+    game.fallTimer -= dt;
+    baby.rotation += dt * 7;
+    baby.y += dt * 70;
+
+    if (game.fallTimer <= 0) {
+      if (game.lives <= 0) {
+        game.state = "gameover";
+        game.message = "Game Over! Tap to restart.";
+      } else {
+        resetRun(false);
+        game.message = "Try again!";
+        game.messageTimer = 1.5;
+      }
+    }
+
+    return;
+  }
+
+  if (game.state === "win" || game.state === "gameover") {
+    return;
+  }
+
+  updateJoystickMovement(dt);
+  updateWobble(dt);
+  updateJump(dt);
+}
+
+function updateJoystickMovement(dt) {
+  // One joystick controls both side movement and balance pressure.
+  baby.targetX += joystick.x * 190 * dt;
+  baby.targetX = clamp(baby.targetX, GAME_W / 2 - 95, GAME_W / 2 + 95);
+  baby.x = lerp(baby.x, baby.targetX, 0.12);
+
+  baby.rotation = lerp(baby.rotation, joystick.x * 0.16 + wobble.x * 0.25, 0.08);
+}
+
+function updateWobble(dt) {
+  // Natural silly wobble drift.
+  wobble.driftX += randRange(-0.9, 0.9) * dt;
+  wobble.driftY += randRange(-0.9, 0.9) * dt;
+
+  wobble.driftX = clamp(wobble.driftX, -0.75, 0.75);
+  wobble.driftY = clamp(wobble.driftY, -0.75, 0.75);
+
+  const jumpPhase = game.jumpTimer / game.jumpDuration;
+
+  // The baby naturally leans forward while bouncing down stairs.
+  const forwardPull = 0.23 + Math.sin(jumpPhase * Math.PI) * 0.22;
+
+  // Joystick influence.
+  // Dragging left/right affects side balance.
+  // Dragging up/down affects forward/back balance.
+  wobble.x += (wobble.driftX + joystick.x * 0.9) * dt;
+  wobble.y += (wobble.driftY - joystick.y * 0.9 + forwardPull) * dt;
+
+  // Slow center pull so the game is not impossible.
+  wobble.x += (0 - wobble.x) * 0.55 * dt;
+  wobble.y += (0 - wobble.y) * 0.38 * dt;
+
+  wobble.x = clamp(wobble.x, -1.15, 1.15);
+  wobble.y = clamp(wobble.y, -1.15, 1.15);
+}
+
+function updateJump(dt) {
+  game.jumpTimer += dt;
+  const t = clamp(game.jumpTimer / game.jumpDuration, 0, 1);
+
+  const arc = Math.sin(t * Math.PI) * 58;
+  baby.y = lerp(390, 505, easeOutQuad(t)) - arc;
+  baby.size = 0.92 + t * 0.16;
+  baby.squish = Math.max(0, 1 - Math.abs(t - 0.5) * 2) * 0.08;
+
+  // Midair obstacle bump.
+  const obs = currentObstacle();
+  if (obs && !obs.hit && t > 0.52) {
+    const lane = getCurrentLane();
+
+    if (lane === obs.lane) {
+      obs.hit = true;
+
+      if (obs.type === "pillow") {
+        wobble.y -= 0.35;
+        wobble.x += randRange(-0.25, 0.25);
+        game.message = "Pillow bounce!";
+        game.messageTimer = 1;
+        game.stars += 2;
+      } else {
+        wobble.x += randRange(-0.65, 0.65);
+        wobble.y += randRange(0.25, 0.65);
+        game.message = "Wobble!";
+        game.messageTimer = 1;
+        game.shake = 1;
+      }
+    }
+  }
+
+  if (game.jumpTimer >= game.jumpDuration) {
+    landBaby();
+  }
+}
+
+function landBaby() {
+  const danger = Math.sqrt(wobble.x * wobble.x + wobble.y * wobble.y);
+  baby.y = 505;
+
+  if (danger < 0.42) {
+    game.landingRating = "PERFECT!";
+    game.combo++;
+    game.stars += 10 + game.combo * 2;
+    if (game.combo % 5 === 0) game.gems += 1;
+    wobble.x *= 0.25;
+    wobble.y *= 0.25;
+    game.message = "Perfect landing!";
+    game.messageTimer = 0.9;
+    nextStep();
+  } else if (danger < 0.78) {
+    game.landingRating = "WOBBLY!";
+    game.combo = 0;
+    game.stars += 4;
+    wobble.x *= 0.6;
+    wobble.y *= 0.6;
+    game.message = "Careful!";
+    game.messageTimer = 0.8;
+    nextStep();
+  } else {
+    baby.happy = false;
+    game.combo = 0;
+    game.lives--;
+    game.state = "fallen";
+    game.fallTimer = 1.25;
+    game.message = "Silly tumble!";
+    game.messageTimer = 1.25;
+    game.shake = 1;
+  }
+}
+
+function nextStep() {
+  game.step++;
+  game.jumpTimer = 0;
+
+  baby.squish = 0.18;
+
+  if (game.step >= game.levelSteps) {
+    game.state = "win";
+    game.message = "Level Complete!";
+    game.messageTimer = 999;
+    game.gems += 3;
+  }
+}
+
+function draw() {
+  ctx.save();
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+
+  const sx = game.shake > 0 ? randRange(-3, 3) * game.shake : 0;
+  const sy = game.shake > 0 ? randRange(-3, 3) * game.shake : 0;
+  ctx.translate(sx, sy);
+
+  drawBackground();
+  drawStairs();
+  drawObstacles();
+  drawBaby();
+  drawHUD();
+  drawJoystick();
+
+  if (game.state === "win") drawWinScreen();
+  if (game.state === "gameover") drawGameOverScreen();
+
+  ctx.restore();
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, GAME_H);
+  g.addColorStop(0, "#234b5c");
+  g.addColorStop(0.45, "#365765");
+  g.addColorStop(1, "#71321e");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  // Back hallway glow.
+  const glow = ctx.createRadialGradient(GAME_W / 2, 150, 20, GAME_W / 2, 150, 190);
+  glow.addColorStop(0, "rgba(255,230,160,0.45)");
+  glow.addColorStop(1, "rgba(255,230,160,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, GAME_W, 320);
+
+  // Mansion walls.
+  ctx.fillStyle = "rgba(20,40,52,0.35)";
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(95, 0);
+  ctx.lineTo(135, GAME_H);
+  ctx.lineTo(0, GAME_H);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(GAME_W, 0);
+  ctx.lineTo(GAME_W - 95, 0);
+  ctx.lineTo(GAME_W - 135, GAME_H);
+  ctx.lineTo(GAME_W, GAME_H);
+  ctx.closePath();
+  ctx.fill();
+
+  drawFrame(28, 90, 55, 70, "#f1b458");
+  drawFrame(345, 110, 50, 62, "#d59a4a");
+  drawFrame(40, 210, 48, 58, "#b78242");
+  drawFrame(340, 230, 52, 60, "#c89247");
+
+  // Window.
+  ctx.fillStyle = "rgba(150,220,255,0.45)";
+  roundRect(78, 28, 70, 92, 10);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(88, 38, 50, 72);
+}
+
+function drawFrame(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  roundRect(x, y, w, h, 6);
+  ctx.fill();
+
+  ctx.fillStyle = "#6ec0d8";
+  roundRect(x + 5, y + 5, w - 10, h - 10, 4);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(255,240,190,0.8)";
+  ctx.beginPath();
+  ctx.arc(x + w / 2, y + h / 2 - 5, Math.min(w, h) * 0.16, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(255,180,150,0.75)";
+  ctx.beginPath();
+  ctx.arc(x + w / 2, y + h / 2 + 14, Math.min(w, h) * 0.22, Math.PI, 0);
+  ctx.fill();
+}
+
+function drawStairs() {
+  // Red stair carpet.
+  for (let i = 0; i < 15; i++) {
+    const y = 170 + i * 38;
+    const width = 145 + i * 21;
+    const x = GAME_W / 2 - width / 2;
+    const h = 34 + i * 1.2;
+
+    ctx.fillStyle = i % 2 === 0 ? "#b9261e" : "#9f201b";
+    roundRect(x, y, width, h, 5);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255,230,120,0.35)";
+    ctx.fillRect(x + 8, y + h - 4, width - 16, 3);
+  }
+
+  // Side railings.
+  ctx.strokeStyle = "#8c552b";
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.moveTo(22, 350);
+  ctx.lineTo(125, 180);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(GAME_W - 22, 350);
+  ctx.lineTo(GAME_W - 125, 180);
+  ctx.stroke();
+
+  ctx.strokeStyle = "#c07a3f";
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(15, 354);
+  ctx.lineTo(122, 178);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(GAME_W - 15, 354);
+  ctx.lineTo(GAME_W - 122, 178);
+  ctx.stroke();
+
+  // Banister posts.
+  for (let i = 0; i < 6; i++) {
+    const t = i / 5;
+    drawPost(lerp(22, 125, t), lerp(350, 180, t));
+    drawPost(lerp(GAME_W - 22, GAME_W - 125, t), lerp(350, 180, t));
+  }
+}
+
+function drawPost(x, y) {
+  ctx.fillStyle = "#a76534";
+  roundRect(x - 5, y, 10, 68, 5);
+  ctx.fill();
+  ctx.fillStyle = "#d18a4c";
+  ctx.beginPath();
+  ctx.arc(x, y, 8, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function stairYForRelative(relativeStep) {
+  return 510 - relativeStep * 42;
+}
+
+function laneX(lane, y) {
+  const spread = 70 + (y - 250) * 0.12;
+  return GAME_W / 2 + lane * spread;
+}
+
+function drawObstacles() {
+  for (const obs of level.obstacles) {
+    const relative = obs.step - game.step;
+    if (relative < -1 || relative > 9) continue;
+
+    const y = stairYForRelative(relative);
+    const x = laneX(obs.lane, y);
+    const s = clamp(0.72 + (y - 250) / 450, 0.45, 1.1);
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+
+    if (obs.type === "pillow") drawPillow(0, 0);
+    if (obs.type === "duck") drawDuck(0, 0);
+    if (obs.type === "block") drawBlock(0, 0);
+    if (obs.type === "ball") drawBall(0, 0);
+    if (obs.type === "teddy") drawTeddy(0, 0);
+
+    ctx.restore();
+  }
+}
+
+function drawPillow(x, y) {
+  ctx.fillStyle = "#35c1d4";
+  roundRect(x - 28, y - 14, 56, 28, 9);
+  ctx.fill();
+
+  ctx.strokeStyle = "#f8d35f";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.fillStyle = "#f8d35f";
+  ctx.beginPath();
+  ctx.arc(x - 30, y, 5, 0, Math.PI * 2);
+  ctx.arc(x + 30, y, 5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawDuck(x, y) {
+  ctx.fillStyle = "#ffd43b";
+  ctx.beginPath();
+  ctx.ellipse(x, y + 5, 25, 15, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x + 15, y - 8, 13, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ff8c2a";
+  ctx.beginPath();
+  ctx.moveTo(x + 27, y - 8);
+  ctx.lineTo(x + 42, y - 3);
+  ctx.lineTo(x + 27, y + 1);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#222";
+  ctx.beginPath();
+  ctx.arc(x + 19, y - 11, 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawBlock(x, y) {
+  ctx.fillStyle = "#f5ca3a";
+  roundRect(x - 22, y - 22, 44, 44, 5);
+  ctx.fill();
+
+  ctx.fillStyle = "#dd4b3e";
+  ctx.font = "bold 26px Arial";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("A", x, y + 1);
+}
+
+function drawBall(x, y) {
+  ctx.fillStyle = "#4bb4ff";
+  ctx.beginPath();
+  ctx.arc(x, y, 20, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#ffde59";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(x, y, 17, -0.4, 2.4);
+  ctx.stroke();
+
+  ctx.strokeStyle = "#f05c70";
+  ctx.beginPath();
+  ctx.moveTo(x - 14, y - 14);
+  ctx.lineTo(x + 14, y + 14);
+  ctx.stroke();
+}
+
+function drawTeddy(x, y) {
+  ctx.fillStyle = "#b9793b";
+  ctx.beginPath();
+  ctx.arc(x - 14, y - 17, 8, 0, Math.PI * 2);
+  ctx.arc(x + 14, y - 17, 8, 0, Math.PI * 2);
+  ctx.arc(x, y - 8, 18, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#d9a76a";
+  ctx.beginPath();
+  ctx.arc(x, y + 17, 24, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#222";
+  ctx.beginPath();
+  ctx.arc(x - 6, y - 12, 2, 0, Math.PI * 2);
+  ctx.arc(x + 6, y - 12, 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#f0c997";
+  ctx.beginPath();
+  ctx.arc(x, y - 3, 7, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawBaby() {
+  ctx.save();
+  ctx.translate(baby.x, baby.y);
+  ctx.rotate(baby.rotation);
+
+  const s = baby.size;
+  ctx.scale(s, s);
+
+  const squishY = 1 - baby.squish;
+  const squishX = 1 + baby.squish * 0.5;
+  ctx.scale(squishX, squishY);
+
+  // Landing sparkle.
+  if (game.jumpTimer / game.jumpDuration > 0.78 && game.state === "playing") {
+    ctx.fillStyle = "rgba(255,230,80,0.75)";
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4 + game.time * 2;
+      const r = 38 + Math.sin(game.time * 7 + i) * 6;
+      drawStar(Math.cos(a) * r, 48 + Math.sin(a) * 12, 5, 10, 5);
+    }
+  }
+
+  // Shadow.
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
+  ctx.beginPath();
+  ctx.ellipse(0, 65, 45, 12, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Legs.
+  ctx.strokeStyle = "#ffd0aa";
+  ctx.lineWidth = 17;
+  ctx.lineCap = "round";
+
+  ctx.beginPath();
+  ctx.moveTo(-14, 36);
+  ctx.lineTo(-24, 67);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(18, 36);
+  ctx.lineTo(30, 62);
+  ctx.stroke();
+
+  // Feet.
+  ctx.fillStyle = "#ffd0aa";
+  ctx.beginPath();
+  ctx.ellipse(-28, 70, 13, 8, -0.2, 0, Math.PI * 2);
+  ctx.ellipse(34, 65, 13, 8, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Diaper.
+  ctx.fillStyle = "#fff7ee";
+  roundRect(-31, 18, 62, 38, 14);
+  ctx.fill();
+
+  ctx.fillStyle = "#b56b35";
+  ctx.beginPath();
+  ctx.arc(0, 36, 8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Shirt/body.
+  ctx.fillStyle = "#5ec7e6";
+  roundRect(-36, -32, 72, 56, 17);
+  ctx.fill();
+
+  // Stars on shirt.
+  ctx.fillStyle = "#ffe26a";
+  for (let i = 0; i < 8; i++) {
+    const px = -25 + (i % 4) * 17;
+    const py = -23 + Math.floor(i / 4) * 22;
+    drawStar(px, py, 4, 8, 5);
+  }
+
+  // Arms.
+  ctx.strokeStyle = "#ffd0aa";
+  ctx.lineWidth = 15;
+  ctx.lineCap = "round";
+
+  ctx.beginPath();
+  ctx.moveTo(-31, -18);
+  ctx.lineTo(-70, -5);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(31, -18);
+  ctx.lineTo(70, -5);
+  ctx.stroke();
+
+  // Hands.
+  ctx.fillStyle = "#ffd0aa";
+  ctx.beginPath();
+  ctx.arc(-75, -4, 9, 0, Math.PI * 2);
+  ctx.arc(75, -4, 9, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Head.
+  ctx.fillStyle = "#ffd0aa";
+  ctx.beginPath();
+  ctx.arc(0, -67, 43, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hair curl.
+  ctx.strokeStyle = "#eeb064";
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.arc(0, -108, 12, 0.2, Math.PI * 1.35);
+  ctx.stroke();
+
+  // Eyes.
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(-15, -70, 11, 0, Math.PI * 2);
+  ctx.arc(15, -70, 11, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#172a33";
+  ctx.beginPath();
+  ctx.arc(-14, -68, 5, 0, Math.PI * 2);
+  ctx.arc(14, -68, 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Cheeks.
+  ctx.fillStyle = "rgba(255,120,120,0.35)";
+  ctx.beginPath();
+  ctx.arc(-26, -55, 8, 0, Math.PI * 2);
+  ctx.arc(26, -55, 8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Mouth.
+  ctx.fillStyle = baby.happy ? "#7d2a2a" : "#5c2430";
+  ctx.beginPath();
+
+  if (baby.happy) {
+    ctx.arc(0, -48, 12, 0, Math.PI);
+  } else {
+    ctx.arc(0, -41, 12, Math.PI, Math.PI * 2);
+  }
+
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawHUD() {
+  drawTitle();
+
+  drawTopCounters();
+
+  drawWobbleBubble();
+
+  drawLives();
+
+  if (game.messageTimer > 0 || game.state !== "playing") {
+    drawMessage();
+  }
+
+  if (game.landingRating && game.messageTimer > 0) {
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.font = "bold 18px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(game.landingRating, GAME_W / 2, 292);
+  }
+
+  // Progress.
+  const barX = 72;
+  const barY = 68;
+  const barW = 286;
+  const barH = 8;
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  roundRect(barX, barY, barW, barH, 8);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffd94f";
+  roundRect(barX, barY, barW * (game.step / game.levelSteps), barH, 8);
+  ctx.fill();
+}
+
+function drawTitle() {
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  ctx.font = "bold 46px Arial";
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = "#113d73";
+  ctx.fillStyle = "#ffffff";
+
+  ctx.strokeText("BABY", GAME_W / 2, 32);
+  ctx.fillStyle = "#ff68a5";
+  ctx.fillText("BABY", GAME_W / 2, 32);
+
+  ctx.font = "bold 42px Arial";
+  ctx.strokeStyle = "#113d73";
+  ctx.lineWidth = 8;
+  ctx.strokeText("BOUNCE", GAME_W / 2, 76);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText("BOUNCE", GAME_W / 2, 76);
+
+  ctx.restore();
+}
+
+function drawTopCounters() {
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  roundRect(333, 20, 80, 34, 16);
+  ctx.fill();
+
+  drawStar(350, 37, 10, 18, 5);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 18px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText(game.stars, 371, 43);
+
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  roundRect(333, 60, 80, 34, 16);
+  ctx.fill();
+
+  ctx.fillStyle = "#bd55ff";
+  ctx.beginPath();
+  ctx.moveTo(351, 64);
+  ctx.lineTo(369, 76);
+  ctx.lineTo(351, 91);
+  ctx.lineTo(333, 76);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#fff";
+  ctx.fillText(game.gems, 371, 84);
+
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath();
+  ctx.arc(36, 36, 25, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(28, 24, 6, 24);
+  ctx.fillRect(40, 24, 6, 24);
+}
+
+function drawLives() {
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = i < game.lives ? "#ff6b93" : "rgba(255,255,255,0.25)";
+    ctx.beginPath();
+    const x = 22 + i * 22;
+    const y = 110;
+    ctx.moveTo(x, y + 8);
+    ctx.bezierCurveTo(x - 12, y - 4, x - 4, y - 15, x, y - 5);
+    ctx.bezierCurveTo(x + 4, y - 15, x + 12, y - 4, x, y + 8);
+    ctx.fill();
+  }
+}
+
+function drawWobbleBubble() {
+  const cx = GAME_W / 2;
+  const cy = 165;
+  const r = 67;
+
+  ctx.save();
+
+  // Label.
+  ctx.fillStyle = "rgba(40,90,140,0.45)";
+  roundRect(cx - 74, cy - 102, 148, 27, 14);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.font = "bold 14px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("WOBBLE BUBBLE", cx, cy - 83);
+
+  // Very translucent bubble.
+  const grad = ctx.createRadialGradient(cx - 20, cy - 22, 10, cx, cy, r);
+  grad.addColorStop(0, "rgba(255,255,255,0.20)");
+  grad.addColorStop(0.45, "rgba(120,210,255,0.10)");
+  grad.addColorStop(1, "rgba(255,255,255,0.04)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.30)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Crosshairs.
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.setLineDash([3, 6]);
+  ctx.beginPath();
+  ctx.moveTo(cx - r + 8, cy);
+  ctx.lineTo(cx + r - 8, cy);
+  ctx.moveTo(cx, cy - r + 8);
+  ctx.lineTo(cx, cy + r - 8);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Labels.
+  ctx.font = "bold 12px Arial";
+  ctx.fillStyle = "rgba(255,255,255,0.86)";
+  ctx.fillText("FORWARD", cx, cy - r + 17);
+  ctx.fillText("BACK", cx, cy + r - 8);
+  ctx.fillText("LEFT", cx - r - 34, cy + 4);
+  ctx.fillText("RIGHT", cx + r + 38, cy + 4);
+
+  // Arrows.
+  drawTriangle(cx, cy - r + 32, 0, "#66e66b");
+  drawTriangle(cx, cy + r - 31, Math.PI, "#ff6262");
+  drawTriangle(cx - r - 12, cy, -Math.PI / 2, "#5fb7ff");
+  drawTriangle(cx + r + 12, cy, Math.PI / 2, "#5fb7ff");
+
+  // Dot.
+  const dotX = cx + wobble.x * 42;
+  const dotY = cy + wobble.y * 42;
+
+  ctx.fillStyle = "rgba(0,120,255,0.95)";
+  ctx.beginPath();
+  ctx.arc(dotX, dotY, 15, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.7)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Danger ring.
+  const danger = Math.sqrt(wobble.x * wobble.x + wobble.y * wobble.y);
+  if (danger > 0.75) {
+    ctx.strokeStyle = "rgba(255,70,70,0.55)";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + Math.sin(game.time * 12) * 3, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawJoystick() {
+  const cx = joystick.baseX;
+  const cy = joystick.baseY;
+  const r = joystick.radius;
+
+  ctx.save();
+
+  ctx.fillStyle = "rgba(255,255,255,0.11)";
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(160,230,255,0.5)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Direction arrows.
+  ctx.fillStyle = "rgba(255,255,255,0.65)";
+  drawTriangle(cx, cy - 44, 0, "rgba(255,255,255,0.65)");
+  drawTriangle(cx, cy + 44, Math.PI, "rgba(255,255,255,0.65)");
+  drawTriangle(cx - 44, cy, -Math.PI / 2, "rgba(255,255,255,0.65)");
+  drawTriangle(cx + 44, cy, Math.PI / 2, "rgba(255,255,255,0.65)");
+
+  ctx.fillStyle = "rgba(255,255,255,0.65)";
+  ctx.beginPath();
+  ctx.arc(joystick.knobX, joystick.knobY, 29, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 15px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("⭐  Drag to balance and land  ⭐", GAME_W / 2, GAME_H - 28);
+
+  ctx.restore();
+}
+
+function drawMessage() {
+  const text = game.message;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  roundRect(GAME_W / 2 - 115, 250, 230, 36, 18);
+  ctx.fill();
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 17px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(text, GAME_W / 2, 274);
+  ctx.restore();
+}
+
+function drawWinScreen() {
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.48)";
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 34px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("LEVEL COMPLETE!", GAME_W / 2, 340);
+
+  ctx.font = "bold 20px Arial";
+  ctx.fillText("Baby stuck the landing!", GAME_W / 2, 380);
+
+  ctx.font = "16px Arial";
+  ctx.fillText("Tap to play again", GAME_W / 2, 420);
+  ctx.restore();
+}
+
+function drawGameOverScreen() {
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 34px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("GAME OVER", GAME_W / 2, 340);
+
+  ctx.font = "18px Arial";
+  ctx.fillText("Too many silly tumbles!", GAME_W / 2, 380);
+
+  ctx.font = "16px Arial";
+  ctx.fillText("Tap to restart", GAME_W / 2, 420);
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawStar(x, y, inner, outer, points) {
+  ctx.save();
+  ctx.beginPath();
+
+  for (let i = 0; i < points * 2; i++) {
+    const angle = -Math.PI / 2 + i * Math.PI / points;
+    const radius = i % 2 === 0 ? outer : inner;
+    const px = x + Math.cos(angle) * radius;
+    const py = y + Math.sin(angle) * radius;
+
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+
+  ctx.closePath();
+  ctx.fillStyle = ctx.fillStyle || "#ffd94f";
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawTriangle(x, y, angle, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, -8);
+  ctx.lineTo(9, 8);
+  ctx.lineTo(-9, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// Pointer controls.
+canvas.addEventListener("pointerdown", (e) => {
+  const p = toGamePoint(e.clientX, e.clientY);
+
+  if (game.state === "win" || game.state === "gameover") {
+    game.lives = 3;
+    game.stars = 0;
+    game.gems = 0;
+    buildLevel();
+    resetRun(true);
+    return;
+  }
+
+  const dx = p.x - joystick.baseX;
+  const dy = p.y - joystick.baseY;
+  const d = Math.sqrt(dx * dx + dy * dy);
+
+  if (d < joystick.radius + 40) {
+    joystick.active = true;
+    joystick.pointerId = e.pointerId;
+    canvas.setPointerCapture(e.pointerId);
+    moveJoystick(p);
+  }
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  if (!joystick.active || joystick.pointerId !== e.pointerId) return;
+  const p = toGamePoint(e.clientX, e.clientY);
+  moveJoystick(p);
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  if (joystick.pointerId !== e.pointerId) return;
+  releaseJoystick();
+});
+
+canvas.addEventListener("pointercancel", (e) => {
+  if (joystick.pointerId !== e.pointerId) return;
+  releaseJoystick();
+});
+
+function moveJoystick(p) {
+  const dx = p.x - joystick.baseX;
+  const dy = p.y - joystick.baseY;
+  const d = Math.sqrt(dx * dx + dy * dy);
+  const maxD = joystick.radius - 18;
+
+  const limited = Math.min(d, maxD);
+  const angle = Math.atan2(dy, dx);
+
+  joystick.knobX = joystick.baseX + Math.cos(angle) * limited;
+  joystick.knobY = joystick.baseY + Math.sin(angle) * limited;
+
+  joystick.x = d === 0 ? 0 : Math.cos(angle) * (limited / maxD);
+  joystick.y = d === 0 ? 0 : Math.sin(angle) * (limited / maxD);
+}
+
+function releaseJoystick() {
+  joystick.active = false;
+  joystick.pointerId = null;
+  joystick.x = 0;
+  joystick.y = 0;
+  joystick.knobX = joystick.baseX;
+  joystick.knobY = joystick.baseY;
+}
+
+// Keyboard support for testing on computer.
+const keys = {};
+window.addEventListener("keydown", e => {
+  keys[e.key.toLowerCase()] = true;
+
+  if ((game.state === "win" || game.state === "gameover") && e.key === " ") {
+    game.lives = 3;
+    game.stars = 0;
+    game.gems = 0;
+    buildLevel();
+    resetRun(true);
+  }
+});
+
+window.addEventListener("keyup", e => {
+  keys[e.key.toLowerCase()] = false;
+});
+
+function updateKeyboardJoystick() {
+  let x = 0;
+  let y = 0;
+
+  if (keys["a"] || keys["arrowleft"]) x -= 1;
+  if (keys["d"] || keys["arrowright"]) x += 1;
+  if (keys["w"] || keys["arrowup"]) y -= 1;
+  if (keys["s"] || keys["arrowdown"]) y += 1;
+
+  const d = Math.sqrt(x * x + y * y);
+  if (d > 0) {
+    x /= d;
+    y /= d;
+
+    joystick.x = x;
+    joystick.y = y;
+    joystick.knobX = joystick.baseX + x * (joystick.radius - 18);
+    joystick.knobY = joystick.baseY + y * (joystick.radius - 18);
+  } else if (!joystick.active) {
+    joystick.x = 0;
+    joystick.y = 0;
+    joystick.knobX = joystick.baseX;
+    joystick.knobY = joystick.baseY;
+  }
+}
+
+let lastTime = performance.now();
+
+function loop(now) {
+  const dt = Math.min(0.033, (now - lastTime) / 1000);
+  lastTime = now;
+
+  updateKeyboardJoystick();
+  update(dt);
+  draw();
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
